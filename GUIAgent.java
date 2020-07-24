@@ -1,3 +1,9 @@
+/**
+ * GUIAgent
+ * 
+ * That agent presents data gathered by agent system through GUI
+ */
+
 package agentControlSystem;
 
 import jade.core.Agent;
@@ -14,7 +20,6 @@ import jade.domain.FIPAAgentManagement.ServiceDescription;
 import jade.proto.ContractNetInitiator;
 import jade.proto.SubscriptionInitiator;
 
-import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
@@ -22,6 +27,7 @@ import java.util.Vector;
 
 public class GUIAgent extends Agent {
 	
+	// States of connection
 	private static final String STARTING_CONNECTION = "Starting_connection";
 	private static final String CONNECTION_RUNNING = "Connection_running";
 	private static final String CONNECTION_STOPPED_BY_USER = "Stopped_by_user";
@@ -71,6 +77,7 @@ public class GUIAgent extends Agent {
 					final String convID = IP + ":" + String.valueOf(port) + "_" + myAgent.getName();
 					if (connectionStates.containsKey(convID) == false) {
 						connectionStates.put(convID, STARTING_CONNECTION);
+						// Creating behaviour that wii fetch data from selected plant.
 						myAgent.addBehaviour(new MonitorPlantBehaviour(myAgent, IP, port, convID));
 					} else {
 						connectionGui.printConnectionError("Connection to that plant has already begun.");
@@ -144,6 +151,7 @@ public class GUIAgent extends Agent {
 	
 	private class MonitorPlantBehaviour extends FSMBehaviour {
 		
+		// Names of states in finite state machine behaviour
 		private static final String CHECK_CONNECTION_AGENTS = "Check_connection_agents";
 		private static final String REPEAT_CHECK_CONNECTION_AGENTS = "Repeat_check_connection_agents";
 		private static final String CALL_FOR_CONNECTION = "Call_for_connection";
@@ -159,6 +167,7 @@ public class GUIAgent extends Agent {
 			ds.put(ConnectionInitiator.PORT_NUM, String.valueOf(port));
 			ds.put(SUBSCRIPTION_ID, sub_ID);
 			
+			// Registering all state transitions
 			registerTransition(CHECK_CONNECTION_AGENTS, REPEAT_CHECK_CONNECTION_AGENTS, 0);
 			registerTransition(CHECK_CONNECTION_AGENTS, HANDLE_CLOSING_CONNECTION, -2);
 			registerDefaultTransition(CHECK_CONNECTION_AGENTS, CALL_FOR_CONNECTION);
@@ -203,7 +212,7 @@ public class GUIAgent extends Agent {
 		}
 		
 		public void action() {
-			
+			// Calling yellow page agent for available connector agents
 			DFAgentDescription template = new DFAgentDescription();
 			ServiceDescription sd = new ServiceDescription();
 			sd.setType("plant_connection");
@@ -241,7 +250,7 @@ public class GUIAgent extends Agent {
 		}
 		
 		public void onWake() {
-			
+			// If there was no connector agents previously try to do it again.
 			DFAgentDescription template = new DFAgentDescription();
 			ServiceDescription sd = new ServiceDescription();
 			sd.setType("plant_connection");
@@ -272,7 +281,7 @@ public class GUIAgent extends Agent {
 	}
 	
 	private class ConnectionInitiator extends ContractNetInitiator {
-		
+		// Connector agents have been found, now call them for proposals.
 		public static final String IP_NUM = "IP_number";
 		public static final String PORT_NUM = "port";
 		
@@ -288,13 +297,13 @@ public class GUIAgent extends Agent {
 			for (int i = 0; i < connectionAgents.length; ++i) {
 				cfp.addReceiver(connectionAgents[i]);
 			}
-			Vector v = new Vector();
+			Vector v = new Vector(); // I do not like using that raw type, but this is the way it is implemented in JADE.
 			v.add(cfp);
 			return v;			
 		}
 		
 		protected void handleAllResponses(Vector responses, Vector acceptances) {
-			
+			// Checking is any requested agent is available to connect.
 			System.out.println(myAgent.getAID().getName() + " - handling responses");
 			ACLMessage bestOffer = null;
 			Vector proposingResponses = new Vector();
@@ -382,7 +391,8 @@ public class GUIAgent extends Agent {
 	}
 	
 	private class SubscribeToPlant extends SubscriptionInitiator {
-		
+		// When everything went well and conncetor agent established connection with plant this agent can initiate
+		// subscription.
 		public static final String RECV_AID = "Receiver_aid";
 		
 		SubscribeToPlant(Agent a, DataStore ds) {
@@ -414,6 +424,7 @@ public class GUIAgent extends Agent {
 		}
 		
 		protected void handleInform(ACLMessage inform) {
+			// That method is called every time update of plant values is received
 			String connectionState = connectionStates.get((String) this.getDataStore().get(SUBSCRIPTION_ID));
 			if (connectionState.contentEquals(CONNECTION_RUNNING)) {
 				String messageContent = inform.getContent();
@@ -439,6 +450,7 @@ public class GUIAgent extends Agent {
 					}
 				}
 			} else {
+				// Canceling subscription.
 				cancel((AID) this.getDataStore().get(RECV_AID), true);
 				System.out.println(myAgent.getAID().getName() + " - cancel subscription message sent to " + ((AID) this.getDataStore().get(RECV_AID)).getName());
 			}

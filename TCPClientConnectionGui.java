@@ -1,3 +1,11 @@
+/**
+ * TCPClientConnectionGui
+ * 
+ * Simple GUI used for establishing agent connection with plant (most likely through another agent)
+ * 
+ * Author - Jakub Pośpiech
+ */
+
 package agentControlSystem;
 
 import java.awt.*;

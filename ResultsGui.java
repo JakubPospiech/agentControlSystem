@@ -1,3 +1,11 @@
+/*
+ * ResultsGui
+ * 
+ * Gui in swing that presents data from plants.
+ * 
+ * author - Jakub Pośpiech
+ */
+
 package agentControlSystem;
 
 import java.awt.*;
@@ -47,7 +55,6 @@ public class ResultsGui extends JFrame {
         		.addComponent(variableValuesInfo));
         
         getContentPane().add(mainPanel);
-		//setResizable(false);
 	}
 	
 	/**
@@ -91,7 +98,7 @@ public class ResultsGui extends JFrame {
 	}
 	
 	/**
-	 * Method for finishing various configuration procedures
+	 * Method for finishing configuration procedures
 	 */
 	private void endConfig() {
 		addWindowListener(new	WindowAdapter() {

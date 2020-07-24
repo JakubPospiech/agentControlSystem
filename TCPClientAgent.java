@@ -1,7 +1,18 @@
+/**
+ * TCPClientAgent
+ * 
+ * This agent establishes TCP connection to address it is
+ * asked to connect. After that it receives data from plant
+ * in XML format and forwards them to subscribed agents.
+ * 
+ * One client agent is connected to only one plant through its
+ * entire lifespan but can send data to multiple agents.
+ * 
+ * Author: Jakub Pośpiech.
+ */
 package agentControlSystem;
 
 import jade.core.Agent;
-import jade.core.AID;
 import jade.core.behaviours.*;
 import jade.lang.acl.ACLMessage;
 import jade.lang.acl.MessageTemplate;
@@ -21,7 +32,6 @@ import java.io.*;
 import javax.xml.stream.XMLEventReader; 
 import javax.xml.stream.XMLInputFactory; 
 import javax.xml.stream.XMLStreamException; 
-import javax.xml.stream.FactoryConfigurationError; 
 import javax.xml.stream.events.*; 
 
 import java.util.Map;
@@ -30,12 +40,21 @@ import java.util.HashMap;
 
 public class TCPClientAgent extends Agent {
 	
+	/**
+	 * Factory for threaded behaviour
+	 */
 	private ThreadedBehaviourFactory tbf;
 	
+	/**
+	 * Variables used to establish and process TCP connection
+	 */
 	private Socket plantSocket;
 	private BufferedReader plantReader;
-	private PrintWriter plantWriter;
+	private PrintWriter plantWriter; // for now agent only reads data so plantWriter stays unused
 	
+	/**
+	 * Connection state and declared possible states.
+	 */
 	private volatile String connectionState;
 	
 	private static final String WAITING_FOR_CONNECTION = "Waiting for conenction";
@@ -44,22 +63,36 @@ public class TCPClientAgent extends Agent {
 	private static final String ERROR_OCCURED = "Error occured";
 	private static final String PLANT_DISCONNECTED = "Plant_disconnected";
 	
+	/**
+	 * Maps storing values gathered from plant and information about
+	 * current subscriptions.
+	 */
 	private Map<String, SubscriptionResponder.Subscription> subsMap;
 	private Map<String, String> valMap;
 	
+	/**
+	 * Description for yellow page agent.
+	 */
 	private DFAgentDescription dfd;
 	
+	/**
+	 * Message template.
+	 */
 	private MessageTemplate cfpTemplate;
 	
+	/**
+	 * Address of plant that agent is connected to.
+	 */
 	private PlantAddress plantAddress;
 	
 	protected void setup() {
 		
 		connectionState = WAITING_FOR_CONNECTION;
+		// Initializing maps
 		subsMap = Collections.synchronizedMap(new HashMap<String, SubscriptionResponder.Subscription>());
 		valMap = Collections.synchronizedMap(new HashMap<String, String>());
 		
-		// registering to DF agent (yellow pages)
+		// Registering to DF agent (yellow pages)
 		dfd = new DFAgentDescription();
 		dfd.setName(getAID());
 		ServiceDescription sd = new ServiceDescription();
@@ -71,11 +104,13 @@ public class TCPClientAgent extends Agent {
 		} catch (FIPAException fe) {
 			fe.printStackTrace();
 		}
-		
+		// Declaring call for proposals message template
 		cfpTemplate = MessageTemplate.MatchPerformative(ACLMessage.CFP);
 		
+		// Behaviour used for reading data from plant works in separate thread.
 		tbf = new ThreadedBehaviourFactory();
 		addBehaviour(tbf.wrap(new ReadFromPlant(this)));
+		// Starting primary behaviours
 		addBehaviour(new HandleContracts(this));
 		addBehaviour(new RegisterSubscriptions(this, MessageTemplate.MatchProtocol("subscription to plant")));
 	}
@@ -85,10 +120,10 @@ public class TCPClientAgent extends Agent {
 		System.out.println(getAID().getName() + " closing...");
 		// Connection is open, behaviour is running in separate thread, need to clean up.
 		if (connectionState != WAITING_FOR_CONNECTION) {
-
 			if (connectionState == ESTABLISHING_CONNECTION || connectionState == CONNECTION_ESTABLISHED) {
 				System.out.println(getAID().getName() + " closing connections...");
 				if (connectionState == CONNECTION_ESTABLISHED) {
+					// Closing established connection by sending FAILURE message to subscribed agents
 					ACLMessage subscriptionMessage = new ACLMessage(ACLMessage.FAILURE);
 					synchronized(subsMap) {
 						for (Map.Entry<String, SubscriptionResponder.Subscription> subsEntry : subsMap.entrySet()) {
@@ -98,13 +133,12 @@ public class TCPClientAgent extends Agent {
 				}	
 			}
 			
-			plantWriter.print("close\r\n");
 			try {
 				plantSocket.shutdownInput();
 			} catch (IOException e) {
 				System.out.println(getAID().getName() + " unexpected IOException occured, while closing input stream.");
 			}
-			// Wait 5s for threaded behaviors to end (input stream is closed so they should end), then force interrupt them.
+			// Wait 5s for threaded behavior to end (input stream is closed so it should end), then force interrupt them.
 			if (!tbf.waitUntilEmpty(5000)) {
 				tbf.interrupt();
 				System.out.println(getAID().getName() + " timeout exceeded, threaded behaviours were forced interrupted.");
@@ -127,15 +161,21 @@ public class TCPClientAgent extends Agent {
 		public void action() {
 			ACLMessage msg = myAgent.receive(cfpTemplate);
 			if (msg != null) {
+				// When call for proposals is received new behaviour is started that
+				// performs all neded operations.
 				myAgent.addBehaviour(new ContractsNegotiator(myAgent, msg));
 			} else {
+				// Behaviour.block() blocks only that particular behaviour, whole
+				// agents works normally, behaviour is becoming active again
+				// when new message is received.
 				block();
 			}
 		}
 	}
 	
 	private class ContractsNegotiator extends SSContractNetResponder {
-		
+		// That behaviour is used for processing call for proposals protocol messages
+		// it extends template version of responder class in call for porposals protocol.
 		ContractsNegotiator(Agent a, ACLMessage cfp) {
 			super(a, cfp);
 		}
@@ -143,6 +183,7 @@ public class TCPClientAgent extends Agent {
 		protected ACLMessage handleCfp(ACLMessage cfp) throws RefuseException, FailureException, NotUnderstoodException {
 			ACLMessage reply = cfp.createReply();
 			if (connectionState == WAITING_FOR_CONNECTION) {
+				// Agent waits to connect to plant so sends message as proposal that it is ready to connect
 				reply.setPerformative(ACLMessage.PROPOSE);
 				reply.setContent("ready");
 			} else if (connectionState == ESTABLISHING_CONNECTION || connectionState == CONNECTION_ESTABLISHED) {
@@ -155,9 +196,13 @@ public class TCPClientAgent extends Agent {
 					if (IPAndPort[1] != "null") {
 						port = Integer.parseInt(IPAndPort[1]);
 						if (plantAddress.isSameAddress(IP, port)) {
+							// Agent is connected to the same plant as required in
+							// call for proposals so sends message that it is already connected to that plant.
 							reply.setPerformative(ACLMessage.PROPOSE);
 							reply.setContent("connected");
 						} else {
+							// Agent is connected to other plant than that required in
+							// call for proposals so sends message refusing proposal.
 							reply.setPerformative(ACLMessage.REFUSE);
 						}
 					}
@@ -165,15 +210,18 @@ public class TCPClientAgent extends Agent {
 					reply.setPerformative(ACLMessage.REFUSE);
 				}
 			} else {
+				// Connection is closed or error occurred, refusing all proposals
 				reply.setPerformative(ACLMessage.REFUSE);
 			}
 			return reply;
 		}
 		
 		protected ACLMessage handleAcceptProposal(ACLMessage cfp, ACLMessage propose, ACLMessage accept) throws FailureException {
+			// Proposal to connect was accepted.
 			ACLMessage reply = accept.createReply();
 			StringBuilder valNamesList = new StringBuilder();
 			if (connectionState == CONNECTION_ESTABLISHED) {
+				// Connection has been already established so just send values names.
 				synchronized(valMap){
 					for(String valName : valMap.keySet()) {
 						valNamesList.append(valName);
@@ -181,6 +229,8 @@ public class TCPClientAgent extends Agent {
 					}
 				}
 			} else if (connectionState == ESTABLISHING_CONNECTION) {
+				// Establishing connection has been started but it is not finished yet
+				// waiting a moment to let it be done.
 				synchronized(valMap) {
 					long timeToWait = accept.getReplyByDate().getTime() - System.currentTimeMillis() - 100;
 					if (timeToWait > 0) {
@@ -197,6 +247,7 @@ public class TCPClientAgent extends Agent {
 					}
 				}
 			} else if (connectionState == WAITING_FOR_CONNECTION) {
+				// Nothing has been done yet so it is time to establish connection.
 				String connectionParams = accept.getContent();
 				String IPAndPort[] = new String[2];
 				IPAndPort = connectionParams.split(":", 2);
@@ -206,14 +257,15 @@ public class TCPClientAgent extends Agent {
 					InetAddress IPaddr = InetAddress.getByName(IP);
 					if (IPAndPort[1] != "null") {
 						port = Integer.parseInt(IPAndPort[1]);
-						
+						// Initializing all variables needed to keep connection with plant
 						plantAddress = new PlantAddress(IP, port);
 						plantSocket = new Socket(IPaddr, port);
-						plantWriter = new PrintWriter(plantSocket.getOutputStream(), true);
+						plantWriter = new PrintWriter(plantSocket.getOutputStream(), true); //not used yet writing is W.I.P.
 						plantReader = new BufferedReader(new InputStreamReader(plantSocket.getInputStream()));
 						System.out.println(myAgent.getAID().getName() + " - establishing connection");
 						
 						synchronized(valMap) {
+							// Variables initialized, notifying TCP connection thread (behaviour) to start read data.
 							connectionState = ESTABLISHING_CONNECTION;
 							valMap.notifyAll();
 						}						
@@ -226,6 +278,7 @@ public class TCPClientAgent extends Agent {
 						}
 						System.out.println(myAgent.getAID().getName() + " - waiting for " + timeToWait + " miliseconds");
 						synchronized(valMap) {
+							// Now give another thread some time to read all the values that plant sent.
 							if (timeToWait > 0) {
 								try {
 									valMap.wait(timeToWait);
@@ -235,6 +288,7 @@ public class TCPClientAgent extends Agent {
 							}
 							
 							if (connectionState == CONNECTION_ESTABLISHED) {
+								// Other thread established connection succesfully, now get values names.
 								for(String valName : valMap.keySet()) {
 									valNamesList.append(valName);
 									valNamesList.append(";");
@@ -249,10 +303,12 @@ public class TCPClientAgent extends Agent {
 			}
 			
 			if (valNamesList.length() > 0) {
+				// list of values names is filled, all went well send it to requesting agent.
 				reply.setPerformative(ACLMessage.INFORM);
 				valNamesList.setLength(valNamesList.length() - 1);
 				reply.setContent(valNamesList.toString());
 			} else {
+				// Values names is not filled, something went wrong in the process, notify requesting agent about the failure.
 				reply.setPerformative(ACLMessage.FAILURE);
 			}
 			System.out.println(myAgent.getAID().getName() + " - handling accept ended");
@@ -263,7 +319,7 @@ public class TCPClientAgent extends Agent {
 	
 	
 	private class RegisterSubscriptions extends SubscriptionResponder {
-		
+		// Behaviour used for registering subscriptions.
 		RegisterSubscriptions(Agent a, MessageTemplate mt) {
 			super(a,mt);
 		}
@@ -271,7 +327,10 @@ public class TCPClientAgent extends Agent {
 		protected ACLMessage handleSubscription(ACLMessage subscription)
                 throws NotUnderstoodException,
                        RefuseException {
+			// Subscription request received staring to process.
 			if (connectionState == CONNECTION_ESTABLISHED) {
+				// Subscription is only accepted when connection is already established
+				// (otherwise requesting agent will subscribe to nothing which has no sense).
 				SubscriptionResponder.Subscription subs = createSubscription(subscription);
 				String subsID = subscription.getConversationId();
 				synchronized(subsMap) {
@@ -279,6 +338,7 @@ public class TCPClientAgent extends Agent {
 				}				
 				return null;
 			} else {
+				// Connection has been not established yet, refusing subscription.
 				ACLMessage reply = subscription.createReply();
 				reply.setPerformative(ACLMessage.REFUSE);
 				return reply;
@@ -287,15 +347,18 @@ public class TCPClientAgent extends Agent {
 		
 		protected ACLMessage handleCancel(ACLMessage cancel)
                 throws FailureException {
+			// Cancel subscription request received, processing it.
 			System.out.println(myAgent.getAID().getName() + " - received cancel message");
 			synchronized(subsMap) {
 				SubscriptionResponder.Subscription subToRemove = subsMap.remove(cancel.getConversationId());
 				if (subToRemove == null) {
+					// Agent that requests cancel was not subscribed previously.
 					System.out.println(myAgent.getAID().getName() + " - cannot find mapping for cancel message " + cancel.getConversationId());
 					ACLMessage reply = cancel.createReply();
 					reply.setPerformative(ACLMessage.FAILURE);
 					return reply;
 				} else {
+					// Closing requested subscription.
 					subToRemove.close();
 					System.out.println(myAgent.getAID().getName() + " - subscription ID " + cancel.getConversationId() + " canceled");
 					return null;
@@ -317,6 +380,7 @@ public class TCPClientAgent extends Agent {
 		public void action() {
 			synchronized(valMap) {
 				try {
+					// Thread is put to wait, at the beginning there is nothing to connect to.
 					valMap.wait();
 				} catch (Exception e) {
 					e.printStackTrace();
@@ -329,16 +393,17 @@ public class TCPClientAgent extends Agent {
 			String varVal = "";
 			boolean varnamesWritten = false;
 			XMLInputFactory xmlReaderFactory = XMLInputFactory.newInstance();
-			// For reading we assume that xml structure is fixed which means that <Cluster> is root element.
-			// When the first XML is received labels in gui are created.
+			// For reading we assume that XML structure is fixed which means that <Cluster> is root element.
 			// Data is received in following pattern: first is Name element with variable name and next come value element.
-			// When </Cluster> is received for the first time we know, that every variable was provided once so we can 
-			// show the gui.
+			// When </Cluster> is received for the first time we know, that every variable was provided once.
+			
+			// NOTE currently program is adapted to work with LabView XML Schema, data in LabView is converted
+			// to XML using "Flatten to XML" function.
 			if (connectionState == ESTABLISHING_CONNECTION) {
 				System.out.println(myAgent.getAID().getName() + " - starting executing parallel behaviour");
 				try {
 					//System.out.println("Starting reading data.");
-					// That's a blocking call
+					// plantReader.readLine() is blocking call
 					while ((serverOutput = plantReader.readLine()) != null) {
 						// Sadly XMLparser cannot read consecutive XML files from one input stream so end of XML needs
 						// to be detected, and whole XML saved as string, which then will be converted into new InputStream
@@ -407,6 +472,7 @@ public class TCPClientAgent extends Agent {
 										StringBuilder messageContent = new StringBuilder();
 										ACLMessage subscriptionMessage = new ACLMessage(ACLMessage.INFORM);
 										
+										// whole XML parsed, sending update to all subscribed agents
 										synchronized(valMap) {
 											for(Map.Entry<String, String> entry : valMap.entrySet()) {
 												messageContent.append(entry.getKey() + ":" + entry.getValue() + ";");
@@ -438,8 +504,9 @@ public class TCPClientAgent extends Agent {
 						} else {
 							wholeXML = wholeXML + serverOutput; // if it is not end of XML then just append it
 						}
-					}			
+					}	
 				} catch (XMLStreamException e) {
+					// error in parsing XML
 					System.out.println(getAID().getName() + " xml parsing exception occured, closing agent.");
 					connectionState = ERROR_OCCURED;
 					ACLMessage subscriptionMessage = new ACLMessage(ACLMessage.FAILURE);
@@ -450,6 +517,7 @@ public class TCPClientAgent extends Agent {
 					}
 					myAgent.doDelete();
 				} catch (IOException e ) {
+					// agent lost connection for some reason.
 					System.out.println(getAID().getName() + " unexpected IOException occured, closing agent.");
 					connectionState = PLANT_DISCONNECTED;
 					ACLMessage subscriptionMessage = new ACLMessage(ACLMessage.FAILURE);
